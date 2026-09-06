@@ -39,8 +39,8 @@ jobs:
           tar -xf AssetRipper_linux_x64.tar.xz -C ./ripper
           chmod -R +x ./ripper
 
-          # إعدادات التصدير بصيغة GLB للحفاظ على الشجرة لـ Godot
-          cat <<EOF > ./AssetRipper.Settings.json
+          # إعدادات التصدير بصيغة GLB للحفاظ على شجرة المجسمات
+          cat <<EOF > ./ripper/AssetRipper.Settings.json
           {
             "MeshExportFormat": "Glb",
             "ImageExportFormat": "Png",
@@ -48,130 +48,108 @@ jobs:
             "ScriptContentLevel": "Level2"
           }
           EOF
-          cp ./AssetRipper.Settings.json ./ripper/AssetRipper.Settings.json
 
-      - name: Run Extraction with Real-Time Monitoring
+      - name: Run Extraction with Fixed Working Directory
         run: |
           xvfb-run --auto-servernum python - << 'EOF'
           import os
           import sys
           import time
-          import re
+          import socket
           import threading
           import subprocess
           import requests
 
-          # 1. البحث عن الملف التنفيذي
+          # دالة لاختيار بورت محلي حر ومفتوح
+          def get_free_port():
+              with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                  s.bind(('127.0.0.1', 0))
+                  return s.getsockname()[1]
+
+          port = get_free_port()
+          print(f"تم حجز المنفذ المحلي: {port}")
+
+          # البحث عن مسار الأداة التنفيذي
           ripper_bin = None
           for root, dirs, files in os.walk("./ripper"):
               for f in files:
                   if "AssetRipper" in f and not f.endswith(('.json', '.dll', '.so', '.pdb')):
-                      ripper_bin = os.path.join(root, f)
+                      ripper_bin = os.path.abspath(os.path.join(root, f))
                       break
 
           if not ripper_bin:
-              print("لم يتم العثور على ملف AssetRipper التنفيذي!")
+              print("لم يتم العثور على أداة AssetRipper!")
               sys.exit(1)
 
-          print(f"الأداة المستخدمة: {ripper_bin}")
-          os.chmod(ripper_bin, 0o755)
+          ripper_dir = os.path.dirname(ripper_bin)
+          print(f"مسار الأداة: {ripper_bin}")
+          print(f"مجلد العمل الخاص بالأداة (cwd): {ripper_dir}")
 
-          # 2. تشغيل السيرفر وقراءة مخرجاته لحظياً
-          env = os.environ.copy()
-          env["ASPNETCORE_URLS"] = "http://127.0.0.1:0" # جعل النظام يعين بورت متاح
-
+          # تشغيل الخادم مع ضبط cwd على مجلد الأداة نفسه (هذا يحل خطأ NullReference تماماً)
           proc = subprocess.Popen(
-              [ripper_bin, "--headless"],
+              [ripper_bin, "--headless", "--port", str(port)],
+              cwd=ripper_dir,
               stdout=subprocess.PIPE,
               stderr=subprocess.STDOUT,
               text=True,
-              env=env,
               bufsize=1
           )
 
-          server_url = None
+          server_url = f"http://127.0.0.1:{port}"
 
-          def monitor_logs():
-              global server_url
+          # طباعة مخرجات السيرفر لحظياً
+          def stream_logs():
               for line in proc.stdout:
-                  clean = line.strip()
-                  print(f"[AssetRipper] {clean}", flush=True)
-                  match = re.search(r"Now listening on:\s*(http://[^\s]+)", clean)
-                  if match and not server_url:
-                      server_url = match.group(1).strip()
+                  print(f"[AssetRipper] {line.strip()}", flush=True)
 
-          thread = threading.Thread(target=monitor_logs, daemon=True)
-          thread.start()
+          threading.Thread(target=stream_logs, daemon=True).start()
 
-          print("في انتظار بدء السيرفر والتقاط البورت...")
+          # انتظار بدء السيرفر
+          print(f"في انتظار استجابة السيرفر على {server_url} ...")
+          ready = False
           for _ in range(60):
-              if server_url:
-                  break
+              try:
+                  res = requests.get(server_url, timeout=2)
+                  if res.status_code < 400:
+                      ready = True
+                      print("--> سيرفر AssetRipper جاهز بنجاح تام!")
+                      break
+              except Exception:
+                  pass
               if proc.poll() is not None:
-                  print(f"توقف البرنامج فجأة برمز خروج: {proc.returncode}")
+                  print(f"توقف السيرفر بكود: {proc.returncode}")
                   sys.exit(1)
               time.sleep(1)
 
-          if not server_url:
-              print("لم يتم التقاط عنوان السيرفر في الوقت المحدد!")
+          if not ready:
+              print("انتهت مهلة انتظار السيرفر!")
               proc.terminate()
               sys.exit(1)
 
-          print(f"--> تم الاتصال بنجاح بسيرفر AssetRipper على: {server_url}")
-
-          # 3. تحديد المسار الفعلي لبيانات اللعبة
+          # تحديد مسار ملفات اللعبة
           game_dir = os.path.abspath("./GameSource")
           for root, dirs, files in os.walk("./GameSource"):
               if any(d.endswith("_Data") for d in dirs) or any(f.endswith(".exe") for f in files):
                   game_dir = os.path.abspath(root)
                   break
 
-          print(f"مسار اللعبة المكتشف: {game_dir}")
+          print(f"المسار الفعلي المكتشف للعبة: {game_dir}")
 
-          # 4. جلب نقاط الاتصال المتاحة (Endpoints)
-          endpoints = []
-          for sw_url in [f"{server_url}/swagger/v1/swagger.json", f"{server_url}/openapi/v1.json"]:
-              try:
-                  sw = requests.get(sw_url, timeout=5).json()
-                  endpoints = list(sw.get("paths", {}).keys())
-                  print(f"الـ Endpoints المتاحة بالسيرفر: {endpoints}")
-                  break
-              except Exception:
-                  pass
+          # إرسال أمر LoadFolder لتحليل اللعبة
+          print("جاري تحميل وقراءة ملفات اللعبة في الذاكرة...")
+          r_load = requests.post(f"{server_url}/LoadFolder", data={"path": game_dir}, timeout=1200)
+          print(f"حالة أمر التحميل: {r_load.status_code}")
 
-          # 5. إرسال أمر التحميل (Load)
-          load_ep = next((e for e in endpoints if "load" in e.lower()), "/LoadFolder")
-          print(f"جاري إرسال أمر تحميل مجلد اللعبة عبر {load_ep}...")
-          try:
-              r_load = requests.post(f"{server_url}{load_ep}", data={"path": game_dir}, timeout=600)
-              if r_load.status_code >= 400:
-                  r_load = requests.post(f"{server_url}{load_ep}", json={"path": game_dir}, timeout=600)
-              print(f"نتيجة أمر التحميل: {r_load.status_code}")
-          except Exception as e:
-              print(f"خطأ أثناء التحميل: {e}")
-
-          # 6. إرسال أمر التصدير (Export)
+          # إرسال أمر Export وتصدير المجسمات بهيئة GLB
           out_dir = os.path.abspath("./ExtractedOutput")
           os.makedirs(out_dir, exist_ok=True)
+          print(f"جاري تصدير المجسمات والمشروع إلى: {out_dir} ...")
 
-          export_ep = None
-          for candidate in ["ExportAllGroupedByAssetType", "ExportPrimaryContent", "ExportUnityProject", "ExportProject"]:
-              found = next((e for e in endpoints if candidate.lower() in e.lower()), None)
-              if found:
-                  export_ep = found
-                  break
+          r_exp = requests.post(f"{server_url}/Export/ExportUnityProject", data={"path": out_dir}, timeout=1800)
+          if r_exp.status_code >= 400:
+              r_exp = requests.post(f"{server_url}/Export/PrimaryContent", data={"path": out_dir}, timeout=1800)
 
-          if not export_ep:
-              export_ep = "/Export/ExportUnityProject"
-
-          print(f"جاري إرسال أمر التصدير عبر {export_ep} إلى {out_dir}...")
-          try:
-              r_exp = requests.post(f"{server_url}{export_ep}", data={"path": out_dir}, timeout=1200)
-              if r_exp.status_code >= 400:
-                  r_exp = requests.post(f"{server_url}{export_ep}", json={"path": out_dir}, timeout=1200)
-              print(f"نتيجة أمر التصدير: {r_exp.status_code}")
-          except Exception as e:
-              print(f"خطأ أثناء التصدير: {e}")
+          print(f"حالة أمر التصدير: {r_exp.status_code}")
 
           time.sleep(5)
           proc.terminate()
