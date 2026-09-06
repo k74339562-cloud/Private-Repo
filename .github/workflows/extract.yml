@@ -7,42 +7,41 @@ jobs:
   extract_assets:
     runs-on: ubuntu-latest
     steps:
-      - name: Free Disk Space
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "/usr/local/share/boost"
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-
       - name: Set up Python & Tools
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install gdown & 7zip
+      - name: Install Tools
         run: |
-          pip install gdown
-          sudo apt-get update && sudo apt-get install -y p7zip-full
+          pip install --upgrade gdown
+          sudo apt-get update && sudo apt-get install -y p7zip-full tar xz-utils
 
       - name: Download Game from Google Drive
         run: |
-          echo "جاري تحميل اللعبة مباشرة عبر معرف الملف..."
-          gdown --fuzzy "https://drive.google.com/uc?id=1OhrVrIuK3UfEW2uLNwIrl60FT7539pER" -O game_archive
+          echo "جاري تحميل اللعبة مباشرة عبر المعرف..."
+          # التحميل باستخدام ID الملف مباشرة بدون الخيار الملغي
+          gdown "1OhrVrIuK3UfEW2uLNwIrl60FT7539pER" -O game_archive
+          
+          # فحص حجم الملف والتأكد من نجاح التحميل
+          ls -lh game_archive
 
       - name: Extract Game Archive
         run: |
+          echo "جاري فك ضغط ملفات اللعبة..."
           mkdir -p ./GameSource
           7z x game_archive -o./GameSource
           rm -f game_archive
 
       - name: Setup AssetRipper
         run: |
+          echo "جاري تجهيز أداة AssetRipper..."
           mkdir -p ./ripper
           wget -q https://github.com/AssetRipper/AssetRipper/releases/latest/download/AssetRipper_linux_x64.tar.xz
           tar -xf AssetRipper_linux_x64.tar.xz -C ./ripper
-          find ./ripper -type f -exec chmod +x {} +
+          chmod +x ./ripper/AssetRipper
 
-          # ضبط استخراج المجسمات بهيئة Glb للحفاظ على الشجرة لـ Godot
+          # إعدادات التصدير بصيغة GLB للحفاظ على الشجرة
           cat <<EOF > ./ripper/AssetRipper.Settings.json
           {
             "MeshExportFormat": "Glb",
@@ -54,13 +53,16 @@ jobs:
 
       - name: Run Extraction
         run: |
+          echo "جاري استخراج وتحويل المجسمات..."
           mkdir -p ./ExtractedOutput
           ./ripper/AssetRipper ./GameSource -o ./ExtractedOutput --headless --allow-export-overwrite || true
 
       - name: Compress Godot Assets
         run: |
+          echo "جاري تجميع الملفات الخاصة بـ Godot..."
           mkdir -p ./Godot_Ready_Assets
-          # سحب ملفات الـ GLB، الصور، الأصوات، وكود C# المرجعي
+          
+          # جمع ملفات GLB والصور والمؤثرات الصوتية وكود C#
           find ./ExtractedOutput -type f \( -name "*.glb" -o -name "*.png" -o -name "*.ogg" -o -name "*.wav" -o -name "*.cs" \) -exec cp --parents {} ./Godot_Ready_Assets/ \;
           
           cd ./Godot_Ready_Assets
@@ -70,5 +72,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: The_Long_Street_Assets
-          path: /tmp/The_Long_Drive_Assets.zip
+          path: /tmp/The_Long_Street_Assets.zip
           retention-days: 3
