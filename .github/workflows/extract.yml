@@ -33,14 +33,13 @@ jobs:
 
       - name: Setup AssetRipper v1.3.14 (Stable)
         run: |
-          echo "جاري تنزيل نسخة AssetRipper المستقرة 1.3.14..."
+          echo "جاري تجهيز AssetRipper 1.3.14..."
           mkdir -p ./ripper
-          # تحميل الإصدار المستقر 1.3.14 لضمان عدم وجود أخطاء برمجية
           wget -q https://github.com/AssetRipper/AssetRipper/releases/download/1.3.14/AssetRipper_linux_x64.zip -O ripper.zip || wget -q https://github.com/AssetRipper/AssetRipper/releases/download/1.3.14/AssetRipper_linux_x64.tar.xz -O ripper.tar.xz
           7z x ripper.* -o./ripper
           chmod -R +x ./ripper
 
-          # إعدادات التصدير بصيغة GLB للحفاظ على الشجرة لـ Godot
+          # إعدادات التصدير بصيغة GLB لـ Godot
           cat <<EOF > ./ripper/AssetRipper.Settings.json
           {
             "MeshExportFormat": "Glb",
@@ -50,11 +49,8 @@ jobs:
           }
           EOF
 
-      - name: Run Extraction with Verified Arguments
+      - name: Run Extraction via Clean Web API
         run: |
-          # رفع حد الملفات المفتوحة بحسب توصيات وثائق AssetRipper للينكس
-          ulimit -n 1048576 || true
-
           xvfb-run --auto-servernum python - << 'EOF'
           import os
           import sys
@@ -70,15 +66,15 @@ jobs:
                   return s.getsockname()[1]
 
           port = get_free_port()
-          print(f"المنفذ المحجوز: {port}")
+          print(f"المنفذ المحجوز للسيرفر: {port}")
 
-          # تحديد مسار ملفات اللعبة أولاً
+          # تحديد مسار ملفات اللعبة
           game_dir = os.path.abspath("./GameSource")
           for root, dirs, files in os.walk("./GameSource"):
               if any(d.endswith("_Data") for d in dirs) or any(f.endswith(".exe") for f in files):
                   game_dir = os.path.abspath(root)
                   break
-          print(f"مسار اللعبة المكتشف: {game_dir}")
+          print(f"المسار الفعلي المكتشف للعبة: {game_dir}")
 
           # البحث عن مسار الأداة التنفيذي
           ripper_bin = None
@@ -94,9 +90,9 @@ jobs:
 
           ripper_dir = os.path.dirname(ripper_bin)
 
-          # تشغيل الخادم مع تمرير game_dir كمعامل صريح لمنع خطأ NullReference
-          cmd = [ripper_bin, game_dir, "--headless", "--port", str(port)]
-          print(f"تشغيل الأمر: {' '.join(cmd)}")
+          # تشغيل السيرفر بالمعاملات المقبولة فقط حرفياً
+          cmd = [ripper_bin, "--headless", "--port", str(port)]
+          print(f"تشغيل الأداة: {' '.join(cmd)}")
 
           proc = subprocess.Popen(
               cmd,
@@ -109,20 +105,21 @@ jobs:
 
           server_url = f"http://127.0.0.1:{port}"
 
+          # بث السجلات لحظياً على الشاشة
           def stream_logs():
               for line in proc.stdout:
                   print(f"[AssetRipper] {line.strip()}", flush=True)
 
           threading.Thread(target=stream_logs, daemon=True).start()
 
-          print(f"في انتظار جاهزية السيرفر على {server_url} ...")
+          print(f"في انتظار تشغيل السيرفر على {server_url} ...")
           ready = False
           for _ in range(60):
               try:
                   res = requests.get(server_url, timeout=2)
                   if res.status_code < 400:
                       ready = True
-                      print("--> سيرفر AssetRipper جاهز ويعمل بنجاح!")
+                      print("--> سيرفر AssetRipper يعمل ويستجيب بنجاح!")
                       break
               except Exception:
                   pass
@@ -136,29 +133,38 @@ jobs:
               proc.terminate()
               sys.exit(1)
 
-          # إرسال أمر Load للتأكيد
-          print("إرسال أمر تأكيد تحميل الملفات...")
+          # 1. إرسال أمر LoadFolder لتحميل ملفات اللعبة
+          print(f"جاري إرسال أمر تحميل مجلد اللعبة: {game_dir} ...")
           try:
-              requests.post(f"{server_url}/LoadFolder", data={"path": game_dir}, timeout=1200)
+              r_load = requests.post(f"{server_url}/LoadFolder", data={"path": game_dir}, timeout=1200, allow_redirects=True)
+              print(f"حالة أمر التحميل: {r_load.status_code}")
           except Exception as e:
-              print(f"ملاحظة أثناء التحميل: {e}")
+              print(f"استثناء أثناء التحميل: {e}")
 
-          # إرسال أمر Export وتصدير المجسمات بهيئة GLB
+          # 2. إرسال أمر Export للتصدير بصيغة GLB
           out_dir = os.path.abspath("./ExtractedOutput")
           os.makedirs(out_dir, exist_ok=True)
-          print(f"جاري تصدير المجسمات إلى: {out_dir} ...")
+          print(f"جاري تصدير المجسمات والمشروع إلى: {out_dir} ...")
 
-          try:
-              r_exp = requests.post(f"{server_url}/Export/ExportUnityProject", data={"path": out_dir}, timeout=1800)
-              if r_exp.status_code >= 400:
-                  r_exp = requests.post(f"{server_url}/Export/PrimaryContent", data={"path": out_dir}, timeout=1800)
-              print(f"حالة التصدير: {r_exp.status_code}")
-          except Exception as e:
-              print(f"خطأ أثناء التصدير: {e}")
+          export_endpoints = ["/Export/ExportUnityProject", "/Export/PrimaryContent", "/ExportUnityProject"]
+          exported = False
+          for ep in export_endpoints:
+              try:
+                  print(f"محاولة التصدير عبر {ep} ...")
+                  r_exp = requests.post(f"{server_url}{ep}", data={"path": out_dir}, timeout=1800, allow_redirects=True)
+                  if r_exp.status_code < 400:
+                      print(f"تم قبول أمر التصدير بنجاح عبر {ep} (كود: {r_exp.status_code})")
+                      exported = True
+                      break
+                  else:
+                      print(f"رد السيرفر على {ep}: {r_exp.status_code}")
+              except Exception as e:
+                  print(f"استثناء أثناء محاولة {ep}: {e}")
 
+          # انتظار بسيط لضمان اكتمال كتابة الملفات
           time.sleep(5)
           proc.terminate()
-          print("اكتملت العملية بنجاح!")
+          print("اكتملت جميع العمليات البرمجية بنجاح!")
           EOF
 
       - name: Compress Godot Assets
