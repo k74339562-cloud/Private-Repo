@@ -1,57 +1,58 @@
-name: Extract TLD Assets for Godot
+name: Extract TLD Assets for Godot (Windows Native)
 
 on:
   workflow_dispatch:
 
 jobs:
   extract_assets:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+
     steps:
-      - name: Set up Python & Tools
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install System Dependencies
+      - name: Install Python Dependencies
         run: |
           pip install --upgrade gdown requests
-          sudo apt-get update
-          sudo apt-get install -y p7zip-full tar xz-utils libicu-dev xvfb
 
       - name: Download Game from Google Drive
         run: |
-          echo "جاري تحميل اللعبة من Google Drive..."
-          gdown "1OhrVrIuK3UfEW2uLNwIrl60FT7539pER" -O game_archive
-          ls -lh game_archive
+          Write-Host "جاري تحميل اللعبة من Google Drive..."
+          gdown "1OhrVrIuK3UfEW2uLNwIrl60FT7539pER" -O game_archive.zip
+        shell: pwsh
 
       - name: Extract Game Archive
         run: |
-          echo "جاري فك ضغط ملفات اللعبة..."
-          mkdir -p ./GameSource
-          7z x game_archive -o./GameSource
-          rm -f game_archive
+          Write-Host "جاري فك ضغط ملفات اللعبة..."
+          7z x game_archive.zip -o"GameSource"
+          Remove-Item -Force game_archive.zip
+        shell: pwsh
 
-      - name: Setup AssetRipper v1.3.14 (Stable)
+      - name: Setup AssetRipper for Windows
         run: |
-          echo "جاري تجهيز AssetRipper 1.3.14..."
-          mkdir -p ./ripper
-          wget -q https://github.com/AssetRipper/AssetRipper/releases/download/1.3.14/AssetRipper_linux_x64.zip -O ripper.zip || wget -q https://github.com/AssetRipper/AssetRipper/releases/download/1.3.14/AssetRipper_linux_x64.tar.xz -O ripper.tar.xz
-          7z x ripper.* -o./ripper
-          chmod -R +x ./ripper
+          Write-Host "جاري تنزيل نسخة Windows الأصلية من AssetRipper..."
+          Invoke-WebRequest -Uri "https://github.com/AssetRipper/AssetRipper/releases/download/1.3.14/AssetRipper_win_x64.zip" -OutFile "ripper.zip"
+          7z x ripper.zip -o"ripper"
+          Remove-Item -Force ripper.zip
 
-          # إعدادات التصدير بصيغة GLB لـ Godot
-          cat <<EOF > ./ripper/AssetRipper.Settings.json
+          # إعدادات التصدير بصيغة GLB للحفاظ على الشجرة لـ Godot
+          $settings = @'
           {
             "MeshExportFormat": "Glb",
             "ImageExportFormat": "Png",
             "AudioExportFormat": "Default",
             "ScriptContentLevel": "Level2"
           }
-          EOF
+          '@
+          Set-Content -Path "ripper\AssetRipper.Settings.json" -Value $settings
+        shell: pwsh
 
-      - name: Run Extraction with Full Arguments
+      - name: Run Windows Native Extraction
         run: |
-          xvfb-run --auto-servernum python - << 'EOF'
+          # كتابة سكربت الاستخراج والتواصل مع السيرفر
+          @'
           import os
           import sys
           import time
@@ -68,30 +69,28 @@ jobs:
           port = get_free_port()
           print(f"المنفذ المحجوز للسيرفر: {port}")
 
-          game_dir = os.path.abspath("./GameSource")
-          for root, dirs, files in os.walk("./GameSource"):
+          # البحث عن مسار اللعبة الفعلي
+          game_dir = os.path.abspath("GameSource")
+          for root, dirs, files in os.walk("GameSource"):
               if any(d.endswith("_Data") for d in dirs) or any(f.endswith(".exe") for f in files):
                   game_dir = os.path.abspath(root)
                   break
-          print(f"المسار الفعلي المكتشف للعبة: {game_dir}")
+          print(f"مسار اللعبة المكتشف: {game_dir}")
 
-          ripper_bin = None
-          for root, dirs, files in os.walk("./ripper"):
-              for f in files:
-                  if "AssetRipper" in f and not f.endswith(('.json', '.dll', '.so', '.pdb')):
-                      ripper_bin = os.path.abspath(os.path.join(root, f))
-                      break
-
-          if not ripper_bin:
-              print("لم يتم العثور على أداة AssetRipper!")
-              sys.exit(1)
+          # تحديد مسار أداة ويندوز التنفيذية
+          ripper_bin = os.path.abspath(os.path.join("ripper", "AssetRipper.GUI.Free.exe"))
+          if not os.path.exists(ripper_bin):
+              for root, dirs, files in os.walk("ripper"):
+                  for f in files:
+                      if "AssetRipper" in f and f.endswith(".exe"):
+                          ripper_bin = os.path.abspath(os.path.join(root, f))
+                          break
 
           ripper_dir = os.path.dirname(ripper_bin)
-          log_file = os.path.abspath("./ripper.log")
+          print(f"مسار الأداة التنفيذي: {ripper_bin}")
 
-          # تمرير الوسائط الأربعة كاملة لمنع حدوث NullReferenceException
-          cmd = [ripper_bin, "--headless", "--port", str(port), "--log", "--log-path", log_file]
-          print(f"تشغيل الأداة بالأمر الكامل: {' '.join(cmd)}")
+          cmd = [ripper_bin, "--headless", "--port", str(port)]
+          print(f"تشغيل الأداة على Windows: {' '.join(cmd)}")
 
           proc = subprocess.Popen(
               cmd,
@@ -110,14 +109,14 @@ jobs:
 
           threading.Thread(target=stream_logs, daemon=True).start()
 
-          print(f"في انتظار تشغيل السيرفر على {server_url} ...")
+          print(f"في انتظار استجابة السيرفر على {server_url} ...")
           ready = False
           for _ in range(60):
               try:
                   res = requests.get(server_url, timeout=2)
                   if res.status_code < 400:
                       ready = True
-                      print("--> سيرفر AssetRipper يعمل ويستجيب بنجاح!")
+                      print("--> سيرفر AssetRipper يعمل بنجاح تام على بيئة Windows!")
                       break
               except Exception:
                   pass
@@ -131,53 +130,57 @@ jobs:
               proc.terminate()
               sys.exit(1)
 
-          # 1. إرسال أمر LoadFolder لتحميل ملفات اللعبة
-          print(f"جاري إرسال أمر تحميل مجلد اللعبة: {game_dir} ...")
+          # 1. إرسال أمر تحميل اللعبة
+          print(f"جاري إرسال أمر تحميل اللعبة: {game_dir} ...")
           try:
               r_load = requests.post(f"{server_url}/LoadFolder", data={"path": game_dir}, timeout=1200, allow_redirects=True)
               print(f"حالة أمر التحميل: {r_load.status_code}")
           except Exception as e:
               print(f"استثناء أثناء التحميل: {e}")
 
-          # 2. إرسال أمر Export للتصدير
-          out_dir = os.path.abspath("./ExtractedOutput")
+          # 2. إرسال أمر التصدير بصيغة GLB
+          out_dir = os.path.abspath("ExtractedOutput")
           os.makedirs(out_dir, exist_ok=True)
           print(f"جاري تصدير المجسمات والمشروع إلى: {out_dir} ...")
 
           export_endpoints = ["/Export/ExportUnityProject", "/Export/PrimaryContent", "/ExportUnityProject"]
-          exported = False
           for ep in export_endpoints:
               try:
                   print(f"محاولة التصدير عبر {ep} ...")
                   r_exp = requests.post(f"{server_url}{ep}", data={"path": out_dir}, timeout=1800, allow_redirects=True)
                   if r_exp.status_code < 400:
-                      print(f"تم قبول أمر التصدير بنجاح عبر {ep} (كود: {r_exp.status_code})")
-                      exported = True
+                      print(f"تم قبول التصدير بنجاح عبر {ep} (كود: {r_exp.status_code})")
                       break
                   else:
-                      print(f"رد السيرفر على {ep}: {r_exp.status_code}")
+                      print(f"رد السيرفر: {r_exp.status_code}")
               except Exception as e:
-                  print(f"استثناء أثناء محاولة {ep}: {e}")
+                  print(f"استثناء أثناء التصدير: {e}")
 
           time.sleep(5)
           proc.terminate()
           print("اكتملت جميع العمليات البرمجية بنجاح!")
-          EOF
+          '@ | Out-File -Encoding utf8 -FilePath "run_extract.py"
+
+          python run_extract.py
+        shell: pwsh
 
       - name: Compress Godot Assets
         run: |
-          echo "جاري تجميع الملفات الخاصة بـ Godot..."
-          mkdir -p ./Godot_Ready_Assets
+          Write-Host "جاري تجميع الملفات الخاصة بـ Godot..."
+          New-Item -ItemType Directory -Force -Path "Godot_Ready_Assets"
           
-          # جمع ملفات GLB والصور والمؤثرات الصوتية والسكربتات
-          find ./ExtractedOutput -type f \( -name "*.glb" -o -name "*.png" -o -name "*.ogg" -o -name "*.wav" -o -name "*.cs" \) -exec cp --parents {} ./Godot_Ready_Assets/ \;
-          
-          cd ./Godot_Ready_Assets
-          zip -r -9 /tmp/The_Long_Street_Assets.zip .
+          # جمع ملفات GLB والصور والأصوات والسكربتات
+          Get-ChildItem -Path "ExtractedOutput" -Recurse -Include *.glb, *.png, *.ogg, *.wav, *.cs | ForEach-Object {
+              $dest = Join-Path "Godot_Ready_Assets" $_.Name
+              Copy-Item -Path $_.FullName -Destination $dest -Force
+          }
+
+          7z a -tzip "The_Long_Street_Assets.zip" ".\Godot_Ready_Assets\*"
+        shell: pwsh
 
       - name: Upload Extracted Assets
         uses: actions/upload-artifact@v4
         with:
           name: The_Long_Street_Assets
-          path: /tmp/The_Long_Street_Assets.zip
+          path: The_Long_Street_Assets.zip
           retention-days: 3
