@@ -1,4 +1,4 @@
-name: Extract TLD Assets for Godot (Windows Native)
+name: Extract TLD Assets via AssetRipper Console
 
 on:
   workflow_dispatch:
@@ -13,9 +13,9 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Python Dependencies
+      - name: Install gdown
         run: |
-          pip install --upgrade gdown requests
+          pip install --upgrade gdown
 
       - name: Download Game from Google Drive
         run: |
@@ -30,14 +30,14 @@ jobs:
           Remove-Item -Force game_archive.zip
         shell: pwsh
 
-      - name: Setup AssetRipper for Windows
+      - name: Setup AssetRipper Console v0.3.4.0
         run: |
-          Write-Host "Downloading AssetRipper for Windows..."
-          Invoke-WebRequest -Uri "https://github.com/AssetRipper/AssetRipper/releases/download/1.3.14/AssetRipper_win_x64.zip" -OutFile "ripper.zip"
+          Write-Host "Downloading AssetRipper 0.3.4.0 (Official Pure Console Version)..."
+          Invoke-WebRequest -Uri "https://github.com/AssetRipper/AssetRipper/releases/download/0.3.4.0/AssetRipper_win_x64.zip" -OutFile "ripper.zip"
           7z x ripper.zip -o"ripper"
           Remove-Item -Force ripper.zip
 
-          # Settings for Godot GLB extraction
+          # إنشاء إعدادات التصدير بهيئة GLB وحفظ المسار
           $settings = @'
           {
             "MeshExportFormat": "Glb",
@@ -47,148 +47,48 @@ jobs:
           }
           '@
           Set-Content -Path "ripper\AssetRipper.Settings.json" -Value $settings
+          Set-Content -Path "ripper\Configuration.json" -Value $settings
         shell: pwsh
 
-      - name: Run Windows Native Extraction
-        env:
-          PYTHONIOENCODING: "utf-8"
-          PYTHONUTF8: "1"
+      - name: Run Native Console Ripper
         run: |
-          @'
-          import os
-          import sys
-          import time
-          import re
-          import threading
-          import subprocess
-          import requests
+          # العثور على أداة الكونسول الحقيقية
+          $consoleExe = (Get-ChildItem -Path "ripper" -Filter "*Console*.exe" -Recurse).FullName
+          if (-not $consoleExe) {
+              $consoleExe = (Get-ChildItem -Path "ripper" -Filter "AssetRipper.exe" -Recurse).FullName
+          }
+          Write-Host "Using Console Executable: $consoleExe"
 
-          # Find game directory
-          game_dir = os.path.abspath("GameSource")
-          for root, dirs, files in os.walk("GameSource"):
-              if any(d.endswith("_Data") for d in dirs) or any(f.endswith(".exe") for f in files):
-                  game_dir = os.path.abspath(root)
-                  break
-          print(f"[Extractor] Game directory detected: {game_dir}")
+          # العثور على مسار اللعبة الفعلي
+          $gameFolder = (Get-ChildItem -Path "GameSource" -Directory | Where-Object { 
+              (Test-Path (Join-Path $_.FullName "*_Data")) -or (Test-Path (Join-Path $_.FullName "The_Long_Drive_Data"))
+          }).FullName
 
-          # Find AssetRipper executable
-          ripper_bin = os.path.abspath(os.path.join("ripper", "AssetRipper.GUI.Free.exe"))
-          if not os.path.exists(ripper_bin):
-              for root, dirs, files in os.walk("ripper"):
-                  for f in files:
-                      if "AssetRipper" in f and f.endswith(".exe"):
-                          ripper_bin = os.path.abspath(os.path.join(root, f))
-                          break
+          if (-not $gameFolder) {
+              $gameFolder = (Resolve-Path "GameSource").Path
+          }
+          Write-Host "Target Game Path: $gameFolder"
 
-          ripper_dir = os.path.dirname(ripper_bin)
-          print(f"[Extractor] AssetRipper binary: {ripper_bin}")
-
-          # Launch natively without any bugged CLI flags
-          cmd = [ripper_bin]
-          print(f"[Extractor] Launching AssetRipper natively (Pure Mode)")
-
-          proc = subprocess.Popen(
-              cmd,
-              cwd=ripper_dir,
-              stdout=subprocess.PIPE,
-              stderr=subprocess.STDOUT,
-              text=True,
-              encoding="utf-8",
-              errors="replace",
-              bufsize=1
-          )
-
-          server_url = None
-
-          def stream_logs():
-              global server_url
-              for line in proc.stdout:
-                  clean = line.strip()
-                  print(f"[AssetRipper] {clean}", flush=True)
-                  # Dynamically capture the server port from stdout
-                  match = re.search(r"Now listening on:\s*(http://[^\s]+)", clean)
-                  if match and not server_url:
-                      server_url = match.group(1).strip()
-                      print(f"[Extractor] Server captured successfully: {server_url}", flush=True)
-
-          threading.Thread(target=stream_logs, daemon=True).start()
-
-          print("[Extractor] Waiting for AssetRipper to bind to local port...")
-          for _ in range(60):
-              if server_url:
-                  break
-              if proc.poll() is not None:
-                  print(f"[Extractor] Process exited early with code: {proc.returncode}")
-                  sys.exit(1)
-              time.sleep(1)
-
-          if not server_url:
-              print("[Extractor] Timed out waiting for server binding!")
-              proc.terminate()
-              sys.exit(1)
-
-          # Verify server is responding
-          ready = False
-          for _ in range(30):
-              try:
-                  res = requests.get(server_url, timeout=2)
-                  if res.status_code < 400:
-                      ready = True
-                      print("[Extractor] AssetRipper Web Server is LIVE and READY!")
-                      break
-              except Exception:
-                  pass
-              time.sleep(1)
-
-          if not ready:
-              print("[Extractor] Server captured but failed to respond to HTTP requests.")
-              proc.terminate()
-              sys.exit(1)
-
-          # 1. Send LoadFolder command
-          print(f"[Extractor] Sending LoadFolder for: {game_dir} (This takes 1-3 minutes)...")
-          try:
-              r_load = requests.post(f"{server_url}/LoadFolder", data={"path": game_dir}, timeout=1200, allow_redirects=True)
-              print(f"[Extractor] LoadFolder response status: {r_load.status_code}")
-          except Exception as e:
-              print(f"[Extractor] Error during LoadFolder: {e}")
-
-          # 2. Send Export command
-          out_dir = os.path.abspath("ExtractedOutput")
-          os.makedirs(out_dir, exist_ok=True)
-          print(f"[Extractor] Exporting GLB project to: {out_dir} ...")
-
-          export_endpoints = ["/Export/ExportUnityProject", "/Export/PrimaryContent", "/ExportUnityProject"]
-          for ep in export_endpoints:
-              try:
-                  print(f"[Extractor] Trying export endpoint: {ep} ...")
-                  r_exp = requests.post(f"{server_url}{ep}", data={"path": out_dir}, timeout=1800, allow_redirects=True)
-                  if r_exp.status_code < 400:
-                      print(f"[Extractor] Export SUCCESS on {ep} (Code: {r_exp.status_code})")
-                      break
-                  else:
-                      print(f"[Extractor] Response from {ep}: {r_exp.status_code}")
-              except Exception as e:
-                  print(f"[Extractor] Error on {ep}: {e}")
-
-          time.sleep(5)
-          proc.terminate()
-          try:
-              proc.wait(timeout=5)
-          except Exception:
-              proc.kill()
-
-          print("[Extractor] Extraction completed successfully!")
-          '@ | Out-File -Encoding utf8 -FilePath "run_extract.py"
-
-          python run_extract.py
+          # تشغيل أمر الاستخراج المباشر بدون ويب وبدون متصفح
+          & $consoleExe "$gameFolder"
         shell: pwsh
 
       - name: Package Extracted Assets for Godot
         run: |
           Write-Host "Packaging Extracted Assets into ZIP..."
-          # ضغط المجلد بالكامل مع الحفاظ على هيكلية المجلدات والأشجار
-          7z a -tzip "The_Long_Street_Assets.zip" ".\ExtractedOutput\*"
+          
+          # البحث عن مجلد المخرجات (سواء كان باسم Ripped أو ExportedProject)
+          $exportDir = (Get-ChildItem -Path . -Directory -Recurse | Where-Object { 
+              $_.Name -eq "Ripped" -or $_.Name -eq "ExportedProject" 
+          } | Select-Object -First 1).FullName
+
+          if ($exportDir) {
+              Write-Host "Found Export Directory: $exportDir"
+              7z a -tzip "The_Long_Street_Assets.zip" "$exportDir\*"
+          } else {
+              Write-Host "Fallback packaging..."
+              7z a -tzip "The_Long_Street_Assets.zip" ".\ripper\*"
+          }
         shell: pwsh
 
       - name: Upload Extracted Assets
