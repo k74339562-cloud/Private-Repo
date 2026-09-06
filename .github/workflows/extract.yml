@@ -58,18 +58,10 @@ jobs:
           import os
           import sys
           import time
-          import socket
+          import re
           import threading
           import subprocess
           import requests
-
-          def get_free_port():
-              with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                  s.bind(('127.0.0.1', 0))
-                  return s.getsockname()[1]
-
-          port = get_free_port()
-          print(f"[Extractor] Reserved local port: {port}")
 
           # Find game directory
           game_dir = os.path.abspath("GameSource")
@@ -91,8 +83,9 @@ jobs:
           ripper_dir = os.path.dirname(ripper_bin)
           print(f"[Extractor] AssetRipper binary: {ripper_bin}")
 
-          cmd = [ripper_bin, "--headless", "--port", str(port)]
-          print(f"[Extractor] Launching: {' '.join(cmd)}")
+          # Launch natively without any bugged CLI flags
+          cmd = [ripper_bin]
+          print(f"[Extractor] Launching AssetRipper natively (Pure Mode)")
 
           proc = subprocess.Popen(
               cmd,
@@ -105,37 +98,55 @@ jobs:
               bufsize=1
           )
 
-          server_url = f"http://127.0.0.1:{port}"
+          server_url = None
 
           def stream_logs():
+              global server_url
               for line in proc.stdout:
-                  print(f"[AssetRipper] {line.strip()}", flush=True)
+                  clean = line.strip()
+                  print(f"[AssetRipper] {clean}", flush=True)
+                  # Dynamically capture the server port from stdout
+                  match = re.search(r"Now listening on:\s*(http://[^\s]+)", clean)
+                  if match and not server_url:
+                      server_url = match.group(1).strip()
+                      print(f"[Extractor] Server captured successfully: {server_url}", flush=True)
 
           threading.Thread(target=stream_logs, daemon=True).start()
 
-          print(f"[Extractor] Waiting for AssetRipper at {server_url} ...")
-          ready = False
+          print("[Extractor] Waiting for AssetRipper to bind to local port...")
           for _ in range(60):
+              if server_url:
+                  break
+              if proc.poll() is not None:
+                  print(f"[Extractor] Process exited early with code: {proc.returncode}")
+                  sys.exit(1)
+              time.sleep(1)
+
+          if not server_url:
+              print("[Extractor] Timed out waiting for server binding!")
+              proc.terminate()
+              sys.exit(1)
+
+          # Verify server is responding
+          ready = False
+          for _ in range(30):
               try:
                   res = requests.get(server_url, timeout=2)
                   if res.status_code < 400:
                       ready = True
-                      print("[Extractor] AssetRipper server is UP and RUNNING!")
+                      print("[Extractor] AssetRipper Web Server is LIVE and READY!")
                       break
               except Exception:
                   pass
-              if proc.poll() is not None:
-                  print(f"[Extractor] Process exited with code: {proc.returncode}")
-                  sys.exit(1)
               time.sleep(1)
 
           if not ready:
-              print("[Extractor] Timed out waiting for server!")
+              print("[Extractor] Server captured but failed to respond to HTTP requests.")
               proc.terminate()
               sys.exit(1)
 
           # 1. Send LoadFolder command
-          print(f"[Extractor] Sending LoadFolder command for: {game_dir} ...")
+          print(f"[Extractor] Sending LoadFolder for: {game_dir} (This takes 1-3 minutes)...")
           try:
               r_load = requests.post(f"{server_url}/LoadFolder", data={"path": game_dir}, timeout=1200, allow_redirects=True)
               print(f"[Extractor] LoadFolder response status: {r_load.status_code}")
@@ -145,7 +156,7 @@ jobs:
           # 2. Send Export command
           out_dir = os.path.abspath("ExtractedOutput")
           os.makedirs(out_dir, exist_ok=True)
-          print(f"[Extractor] Exporting GLB models to: {out_dir} ...")
+          print(f"[Extractor] Exporting GLB project to: {out_dir} ...")
 
           export_endpoints = ["/Export/ExportUnityProject", "/Export/PrimaryContent", "/ExportUnityProject"]
           for ep in export_endpoints:
@@ -162,24 +173,22 @@ jobs:
 
           time.sleep(5)
           proc.terminate()
-          print("[Extractor] All tasks completed successfully!")
+          try:
+              proc.wait(timeout=5)
+          except Exception:
+              proc.kill()
+
+          print("[Extractor] Extraction completed successfully!")
           '@ | Out-File -Encoding utf8 -FilePath "run_extract.py"
 
           python run_extract.py
         shell: pwsh
 
-      - name: Compress Godot Assets
+      - name: Package Extracted Assets for Godot
         run: |
-          Write-Host "Packaging Godot Assets into ZIP..."
-          New-Item -ItemType Directory -Force -Path "Godot_Ready_Assets"
-          
-          # جمع ملفات GLB والصور والأصوات والسكربتات
-          Get-ChildItem -Path "ExtractedOutput" -Recurse -Include *.glb, *.png, *.ogg, *.wav, *.cs | ForEach-Object {
-              $dest = Join-Path "Godot_Ready_Assets" $_.Name
-              Copy-Item -Path $_.FullName -Destination $dest -Force
-          }
-
-          7z a -tzip "The_Long_Street_Assets.zip" ".\Godot_Ready_Assets\*"
+          Write-Host "Packaging Extracted Assets into ZIP..."
+          # ضغط المجلد بالكامل مع الحفاظ على هيكلية المجلدات والأشجار
+          7z a -tzip "The_Long_Street_Assets.zip" ".\ExtractedOutput\*"
         shell: pwsh
 
       - name: Upload Extracted Assets
