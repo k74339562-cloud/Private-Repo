@@ -37,7 +37,6 @@ jobs:
           7z x ripper.zip -o"ripper"
           Remove-Item -Force ripper.zip
 
-          # Settings for Godot GLB extraction
           $settings = @'
           {
             "MeshExportFormat": "Glb",
@@ -70,11 +69,10 @@ jobs:
           }
           Write-Host "Target Game Path: $gameFolder"
 
-          # تشغيل الاستخراج
           try {
               & $consoleExe "$gameFolder"
           } catch {
-              Write-Host "Extraction completed, ignored console key prompt: $_"
+              Write-Host "Extraction completed: $_"
           }
 
           $global:LASTEXITCODE = 0
@@ -84,8 +82,6 @@ jobs:
         if: always()
         run: |
           Write-Host "Packaging Extracted Assets into ZIP..."
-          
-          # البحث عن مجلد المشروع المستخرج
           $exportDir = (Get-ChildItem -Path . -Directory -Recurse | Where-Object { $_.Name -eq "ExportedProject" } | Select-Object -First 1).FullName
           if (-not $exportDir) {
               $exportDir = (Get-ChildItem -Path . -Directory -Recurse | Where-Object { $_.Name -eq "Ripped" } | Select-Object -First 1).FullName
@@ -95,8 +91,29 @@ jobs:
               Write-Host "Found Extracted Project at: $exportDir"
               7z a -tzip "The_Long_Street_Assets.zip" "$exportDir\*"
           } else {
-              Write-Host "Fallback: packaging all extracted folders..."
               7z a -tzip "The_Long_Street_Assets.zip" ".\ripper\*"
+          }
+        shell: pwsh
+
+      - name: Generate Direct ADM & Cloud Download Link
+        if: always()
+        run: |
+          Write-Host "Uploading to PixelDrain for high-speed direct download..."
+          $file = "The_Long_Street_Assets.zip"
+          
+          # الرفع إلى PixelDrain وتوليد رابط مباشر يدعم الاستكمال
+          try {
+              $response = curl.exe -s -T $file https://pixeldrain.com/api/file/
+              $json = $response | ConvertFrom-Json
+              if ($json.success) {
+                  $directUrl = "https://pixeldrain.com/api/file/$($json.id)?download"
+                  Write-Host "=========================================================="
+                  Write-Host "انسخ هذا الرابط المباشر وضعه في تطبيق ADM:"
+                  Write-Host $directUrl
+                  Write-Host "=========================================================="
+              }
+          } catch {
+              Write-Host "Error: $_"
           }
         shell: pwsh
 
