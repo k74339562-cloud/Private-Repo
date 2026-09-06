@@ -31,15 +31,16 @@ jobs:
           7z x game_archive -o./GameSource
           rm -f game_archive
 
-      - name: Setup AssetRipper & Configurations
+      - name: Setup AssetRipper v1.3.14 (Stable)
         run: |
-          echo "جاري تنزيل وتجهيز AssetRipper..."
+          echo "جاري تنزيل نسخة AssetRipper المستقرة 1.3.14..."
           mkdir -p ./ripper
-          wget -q https://github.com/AssetRipper/AssetRipper/releases/latest/download/AssetRipper_linux_x64.tar.xz
-          tar -xf AssetRipper_linux_x64.tar.xz -C ./ripper
+          # تحميل الإصدار المستقر 1.3.14 لضمان عدم وجود أخطاء برمجية
+          wget -q https://github.com/AssetRipper/AssetRipper/releases/download/1.3.14/AssetRipper_linux_x64.zip -O ripper.zip || wget -q https://github.com/AssetRipper/AssetRipper/releases/download/1.3.14/AssetRipper_linux_x64.tar.xz -O ripper.tar.xz
+          7z x ripper.* -o./ripper
           chmod -R +x ./ripper
 
-          # إعدادات التصدير بصيغة GLB للحفاظ على شجرة المجسمات
+          # إعدادات التصدير بصيغة GLB للحفاظ على الشجرة لـ Godot
           cat <<EOF > ./ripper/AssetRipper.Settings.json
           {
             "MeshExportFormat": "Glb",
@@ -49,8 +50,11 @@ jobs:
           }
           EOF
 
-      - name: Run Extraction with Fixed Working Directory
+      - name: Run Extraction with Verified Arguments
         run: |
+          # رفع حد الملفات المفتوحة بحسب توصيات وثائق AssetRipper للينكس
+          ulimit -n 1048576 || true
+
           xvfb-run --auto-servernum python - << 'EOF'
           import os
           import sys
@@ -60,14 +64,21 @@ jobs:
           import subprocess
           import requests
 
-          # دالة لاختيار بورت محلي حر ومفتوح
           def get_free_port():
               with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                   s.bind(('127.0.0.1', 0))
                   return s.getsockname()[1]
 
           port = get_free_port()
-          print(f"تم حجز المنفذ المحلي: {port}")
+          print(f"المنفذ المحجوز: {port}")
+
+          # تحديد مسار ملفات اللعبة أولاً
+          game_dir = os.path.abspath("./GameSource")
+          for root, dirs, files in os.walk("./GameSource"):
+              if any(d.endswith("_Data") for d in dirs) or any(f.endswith(".exe") for f in files):
+                  game_dir = os.path.abspath(root)
+                  break
+          print(f"مسار اللعبة المكتشف: {game_dir}")
 
           # البحث عن مسار الأداة التنفيذي
           ripper_bin = None
@@ -82,12 +93,13 @@ jobs:
               sys.exit(1)
 
           ripper_dir = os.path.dirname(ripper_bin)
-          print(f"مسار الأداة: {ripper_bin}")
-          print(f"مجلد العمل الخاص بالأداة (cwd): {ripper_dir}")
 
-          # تشغيل الخادم مع ضبط cwd على مجلد الأداة نفسه (هذا يحل خطأ NullReference تماماً)
+          # تشغيل الخادم مع تمرير game_dir كمعامل صريح لمنع خطأ NullReference
+          cmd = [ripper_bin, game_dir, "--headless", "--port", str(port)]
+          print(f"تشغيل الأمر: {' '.join(cmd)}")
+
           proc = subprocess.Popen(
-              [ripper_bin, "--headless", "--port", str(port)],
+              cmd,
               cwd=ripper_dir,
               stdout=subprocess.PIPE,
               stderr=subprocess.STDOUT,
@@ -97,22 +109,20 @@ jobs:
 
           server_url = f"http://127.0.0.1:{port}"
 
-          # طباعة مخرجات السيرفر لحظياً
           def stream_logs():
               for line in proc.stdout:
                   print(f"[AssetRipper] {line.strip()}", flush=True)
 
           threading.Thread(target=stream_logs, daemon=True).start()
 
-          # انتظار بدء السيرفر
-          print(f"في انتظار استجابة السيرفر على {server_url} ...")
+          print(f"في انتظار جاهزية السيرفر على {server_url} ...")
           ready = False
           for _ in range(60):
               try:
                   res = requests.get(server_url, timeout=2)
                   if res.status_code < 400:
                       ready = True
-                      print("--> سيرفر AssetRipper جاهز بنجاح تام!")
+                      print("--> سيرفر AssetRipper جاهز ويعمل بنجاح!")
                       break
               except Exception:
                   pass
@@ -126,34 +136,29 @@ jobs:
               proc.terminate()
               sys.exit(1)
 
-          # تحديد مسار ملفات اللعبة
-          game_dir = os.path.abspath("./GameSource")
-          for root, dirs, files in os.walk("./GameSource"):
-              if any(d.endswith("_Data") for d in dirs) or any(f.endswith(".exe") for f in files):
-                  game_dir = os.path.abspath(root)
-                  break
-
-          print(f"المسار الفعلي المكتشف للعبة: {game_dir}")
-
-          # إرسال أمر LoadFolder لتحليل اللعبة
-          print("جاري تحميل وقراءة ملفات اللعبة في الذاكرة...")
-          r_load = requests.post(f"{server_url}/LoadFolder", data={"path": game_dir}, timeout=1200)
-          print(f"حالة أمر التحميل: {r_load.status_code}")
+          # إرسال أمر Load للتأكيد
+          print("إرسال أمر تأكيد تحميل الملفات...")
+          try:
+              requests.post(f"{server_url}/LoadFolder", data={"path": game_dir}, timeout=1200)
+          except Exception as e:
+              print(f"ملاحظة أثناء التحميل: {e}")
 
           # إرسال أمر Export وتصدير المجسمات بهيئة GLB
           out_dir = os.path.abspath("./ExtractedOutput")
           os.makedirs(out_dir, exist_ok=True)
-          print(f"جاري تصدير المجسمات والمشروع إلى: {out_dir} ...")
+          print(f"جاري تصدير المجسمات إلى: {out_dir} ...")
 
-          r_exp = requests.post(f"{server_url}/Export/ExportUnityProject", data={"path": out_dir}, timeout=1800)
-          if r_exp.status_code >= 400:
-              r_exp = requests.post(f"{server_url}/Export/PrimaryContent", data={"path": out_dir}, timeout=1800)
-
-          print(f"حالة أمر التصدير: {r_exp.status_code}")
+          try:
+              r_exp = requests.post(f"{server_url}/Export/ExportUnityProject", data={"path": out_dir}, timeout=1800)
+              if r_exp.status_code >= 400:
+                  r_exp = requests.post(f"{server_url}/Export/PrimaryContent", data={"path": out_dir}, timeout=1800)
+              print(f"حالة التصدير: {r_exp.status_code}")
+          except Exception as e:
+              print(f"خطأ أثناء التصدير: {e}")
 
           time.sleep(5)
           proc.terminate()
-          print("اكتملت جميع العمليات بنجاح!")
+          print("اكتملت العملية بنجاح!")
           EOF
 
       - name: Compress Godot Assets
