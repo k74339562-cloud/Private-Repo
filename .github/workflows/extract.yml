@@ -37,6 +37,7 @@ jobs:
           7z x ripper.zip -o"ripper"
           Remove-Item -Force ripper.zip
 
+          # إعدادات التصدير بصيغة GLB للحصول على مجسمات 3D جاهزة لـ Godot
           $settings = @'
           {
             "MeshExportFormat": "Glb",
@@ -45,20 +46,15 @@ jobs:
             "ScriptContentLevel": "Level2"
           }
           '@
+          # وضع ملف الإعدادات في مسار الأداة ومسار العمل لضمان قراءته 100%
+          Set-Content -Path "AssetRipper.Settings.json" -Value $settings
           Set-Content -Path "ripper\AssetRipper.Settings.json" -Value $settings
-          Set-Content -Path "ripper\Configuration.json" -Value $settings
         shell: pwsh
 
       - name: Run Native Console Ripper
         continue-on-error: true
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
-
-          $consoleExe = (Get-ChildItem -Path "ripper" -Filter "*Console*.exe" -Recurse).FullName
-          if (-not $consoleExe) {
-              $consoleExe = (Get-ChildItem -Path "ripper" -Filter "AssetRipper.exe" -Recurse).FullName
-          }
-          Write-Host "Using Console Executable: $consoleExe"
 
           $gameFolder = (Get-ChildItem -Path "GameSource" -Directory | Where-Object { 
               (Test-Path (Join-Path $_.FullName "*_Data")) -or (Test-Path (Join-Path $_.FullName "The_Long_Drive_Data"))
@@ -69,11 +65,15 @@ jobs:
           }
           Write-Host "Target Game Path: $gameFolder"
 
+          # الدخول إلى مجلد الأداة وتشغيلها في مسارها لتقرأ إعدادات GLB إجبارياً
+          Push-Location "ripper"
           try {
-              & $consoleExe "$gameFolder"
+              Write-Host "Running AssetRipper Console..."
+              & .\AssetRipper.Console.exe "$gameFolder"
           } catch {
-              Write-Host "Extraction finished: $_"
+              Write-Host "Extraction completed: $_"
           }
+          Pop-Location
 
           $global:LASTEXITCODE = 0
         shell: pwsh
@@ -91,47 +91,8 @@ jobs:
               Write-Host "Found Extracted Project at: $exportDir"
               7z a -tzip "The_Long_Street_Assets.zip" "$exportDir\*"
           } else {
+              Write-Host "Fallback to ripper folder..."
               7z a -tzip "The_Long_Street_Assets.zip" ".\ripper\*"
-          }
-        shell: pwsh
-
-      - name: Generate Direct Cloud Links (For Colab & ADM)
-        if: always()
-        run: |
-          $file = "The_Long_Street_Assets.zip"
-          if (Test-Path $file) {
-              $sizeMB = [math]::Round((Get-Item $file).Length / 1MB, 2)
-              Write-Host "Compressed ZIP Size: $sizeMB MB"
-
-              # 1. الرفع إلى Transfer.sh (رابط صريح ومباشر)
-              Write-Host "Uploading to Transfer.sh..."
-              try {
-                  $transferLink = curl.exe -s --upload-file $file "https://transfer.sh/$file"
-                  Write-Host "=========================================================="
-                  Write-Host "رابط التحميل المباشر الأول (Transfer.sh):"
-                  Write-Host $transferLink
-                  Write-Host "=========================================================="
-              } catch {
-                  Write-Host "Transfer.sh Error: $_"
-              }
-
-              # 2. الرفع إلى PixelDrain (بالرابط المصحح)
-              Write-Host "Uploading to PixelDrain..."
-              try {
-                  $response = curl.exe -s -T $file "https://pixeldrain.com/api/file/$file"
-                  $json = $response | ConvertFrom-Json
-                  if ($json.success) {
-                      $pixelLink = "https://pixeldrain.com/api/file/$($json.id)?download"
-                      Write-Host "=========================================================="
-                      Write-Host "رابط التحميل المباشر الثاني (PixelDrain):"
-                      Write-Host $pixelLink
-                      Write-Host "=========================================================="
-                  }
-              } catch {
-                  Write-Host "PixelDrain Error: $_"
-              }
-          } else {
-              Write-Host "Error: File $file not found!"
           }
         shell: pwsh
 
