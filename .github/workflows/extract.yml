@@ -49,7 +49,7 @@ jobs:
           }
           EOF
 
-      - name: Run Clean Extraction
+      - name: Run Extraction with Full Arguments
         run: |
           xvfb-run --auto-servernum python - << 'EOF'
           import os
@@ -68,7 +68,6 @@ jobs:
           port = get_free_port()
           print(f"المنفذ المحجوز للسيرفر: {port}")
 
-          # تحديد مسار ملفات اللعبة
           game_dir = os.path.abspath("./GameSource")
           for root, dirs, files in os.walk("./GameSource"):
               if any(d.endswith("_Data") for d in dirs) or any(f.endswith(".exe") for f in files):
@@ -76,7 +75,6 @@ jobs:
                   break
           print(f"المسار الفعلي المكتشف للعبة: {game_dir}")
 
-          # البحث عن مسار الأداة التنفيذي
           ripper_bin = None
           for root, dirs, files in os.walk("./ripper"):
               for f in files:
@@ -89,10 +87,11 @@ jobs:
               sys.exit(1)
 
           ripper_dir = os.path.dirname(ripper_bin)
+          log_file = os.path.abspath("./ripper.log")
 
-          # هنا التعديل: تشغيل الأداة بالمعاملات المقبولة فقط بدون مسار اللعبة
-          cmd = [ripper_bin, "--headless", "--port", str(port)]
-          print(f"تشغيل الأداة بالأمر الصحيح: {' '.join(cmd)}")
+          # تمرير الوسائط الأربعة كاملة لمنع حدوث NullReferenceException
+          cmd = [ripper_bin, "--headless", "--port", str(port), "--log", "--log-path", log_file]
+          print(f"تشغيل الأداة بالأمر الكامل: {' '.join(cmd)}")
 
           proc = subprocess.Popen(
               cmd,
@@ -105,7 +104,6 @@ jobs:
 
           server_url = f"http://127.0.0.1:{port}"
 
-          # بث السجلات لحظياً
           def stream_logs():
               for line in proc.stdout:
                   print(f"[AssetRipper] {line.strip()}", flush=True)
@@ -133,7 +131,7 @@ jobs:
               proc.terminate()
               sys.exit(1)
 
-          # 1. إرسال أمر LoadFolder لتحميل ملفات اللعبة عبر الويب
+          # 1. إرسال أمر LoadFolder لتحميل ملفات اللعبة
           print(f"جاري إرسال أمر تحميل مجلد اللعبة: {game_dir} ...")
           try:
               r_load = requests.post(f"{server_url}/LoadFolder", data={"path": game_dir}, timeout=1200, allow_redirects=True)
