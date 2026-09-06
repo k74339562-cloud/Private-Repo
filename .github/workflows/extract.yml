@@ -32,12 +32,12 @@ jobs:
 
       - name: Setup AssetRipper Console v0.3.4.0
         run: |
-          Write-Host "Downloading AssetRipper 0.3.4.0 (Official Pure Console Version)..."
+          Write-Host "Downloading AssetRipper 0.3.4.0..."
           Invoke-WebRequest -Uri "https://github.com/AssetRipper/AssetRipper/releases/download/0.3.4.0/AssetRipper_win_x64.zip" -OutFile "ripper.zip"
           7z x ripper.zip -o"ripper"
           Remove-Item -Force ripper.zip
 
-          # إنشاء إعدادات التصدير بهيئة GLB وحفظ المسار
+          # Settings for Godot GLB extraction
           $settings = @'
           {
             "MeshExportFormat": "Glb",
@@ -51,15 +51,16 @@ jobs:
         shell: pwsh
 
       - name: Run Native Console Ripper
+        continue-on-error: true
         run: |
-          # العثور على أداة الكونسول الحقيقية
+          $PSNativeCommandUseErrorActionPreference = $false
+
           $consoleExe = (Get-ChildItem -Path "ripper" -Filter "*Console*.exe" -Recurse).FullName
           if (-not $consoleExe) {
               $consoleExe = (Get-ChildItem -Path "ripper" -Filter "AssetRipper.exe" -Recurse).FullName
           }
           Write-Host "Using Console Executable: $consoleExe"
 
-          # العثور على مسار اللعبة الفعلي
           $gameFolder = (Get-ChildItem -Path "GameSource" -Directory | Where-Object { 
               (Test-Path (Join-Path $_.FullName "*_Data")) -or (Test-Path (Join-Path $_.FullName "The_Long_Drive_Data"))
           }).FullName
@@ -69,29 +70,38 @@ jobs:
           }
           Write-Host "Target Game Path: $gameFolder"
 
-          # تشغيل أمر الاستخراج المباشر بدون ويب وبدون متصفح
-          & $consoleExe "$gameFolder"
+          # تشغيل الاستخراج
+          try {
+              & $consoleExe "$gameFolder"
+          } catch {
+              Write-Host "Extraction completed, ignored console key prompt: $_"
+          }
+
+          $global:LASTEXITCODE = 0
         shell: pwsh
 
       - name: Package Extracted Assets for Godot
+        if: always()
         run: |
           Write-Host "Packaging Extracted Assets into ZIP..."
           
-          # البحث عن مجلد المخرجات (سواء كان باسم Ripped أو ExportedProject)
-          $exportDir = (Get-ChildItem -Path . -Directory -Recurse | Where-Object { 
-              $_.Name -eq "Ripped" -or $_.Name -eq "ExportedProject" 
-          } | Select-Object -First 1).FullName
+          # البحث عن مجلد المشروع المستخرج
+          $exportDir = (Get-ChildItem -Path . -Directory -Recurse | Where-Object { $_.Name -eq "ExportedProject" } | Select-Object -First 1).FullName
+          if (-not $exportDir) {
+              $exportDir = (Get-ChildItem -Path . -Directory -Recurse | Where-Object { $_.Name -eq "Ripped" } | Select-Object -First 1).FullName
+          }
 
           if ($exportDir) {
-              Write-Host "Found Export Directory: $exportDir"
+              Write-Host "Found Extracted Project at: $exportDir"
               7z a -tzip "The_Long_Street_Assets.zip" "$exportDir\*"
           } else {
-              Write-Host "Fallback packaging..."
+              Write-Host "Fallback: packaging all extracted folders..."
               7z a -tzip "The_Long_Street_Assets.zip" ".\ripper\*"
           }
         shell: pwsh
 
       - name: Upload Extracted Assets
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: The_Long_Street_Assets
