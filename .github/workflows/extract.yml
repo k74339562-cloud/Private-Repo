@@ -12,18 +12,15 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Tools
+      - name: Install Dependencies
         run: |
-          pip install --upgrade gdown
-          sudo apt-get update && sudo apt-get install -y p7zip-full tar xz-utils
+          pip install --upgrade gdown requests
+          sudo apt-get update && sudo apt-get install -y p7zip-full tar xz-utils libicu-dev
 
       - name: Download Game from Google Drive
         run: |
-          echo "جاري تحميل اللعبة مباشرة عبر المعرف..."
-          # التحميل باستخدام ID الملف مباشرة بدون الخيار الملغي
+          echo "جاري تحميل اللعبة من Google Drive..."
           gdown "1OhrVrIuK3UfEW2uLNwIrl60FT7539pER" -O game_archive
-          
-          # فحص حجم الملف والتأكد من نجاح التحميل
           ls -lh game_archive
 
       - name: Extract Game Archive
@@ -35,13 +32,13 @@ jobs:
 
       - name: Setup AssetRipper
         run: |
-          echo "جاري تجهيز أداة AssetRipper..."
+          echo "جاري تنزيل وتجهيز AssetRipper..."
           mkdir -p ./ripper
           wget -q https://github.com/AssetRipper/AssetRipper/releases/latest/download/AssetRipper_linux_x64.tar.xz
           tar -xf AssetRipper_linux_x64.tar.xz -C ./ripper
-          chmod +x ./ripper/AssetRipper
+          chmod -R +x ./ripper
 
-          # إعدادات التصدير بصيغة GLB للحفاظ على الشجرة
+          # إعدادات التصدير بصيغة GLB
           cat <<EOF > ./ripper/AssetRipper.Settings.json
           {
             "MeshExportFormat": "Glb",
@@ -51,18 +48,94 @@ jobs:
           }
           EOF
 
-      - name: Run Extraction
+      - name: Run Extraction via Python Orchestrator
         run: |
-          echo "جاري استخراج وتحويل المجسمات..."
-          mkdir -p ./ExtractedOutput
-          ./ripper/AssetRipper ./GameSource -o ./ExtractedOutput --headless --allow-export-overwrite || true
+          python - << 'EOF'
+          import os
+          import sys
+          import time
+          import glob
+          import subprocess
+          import requests
+
+          # 1. البحث عن الملف التنفيذي لـ AssetRipper
+          ripper_bin = None
+          for root, dirs, files in os.walk("./ripper"):
+              for f in files:
+                  if "AssetRipper" in f and not f.endswith(('.json', '.dll', '.so', '.pdb')):
+                      ripper_bin = os.path.join(root, f)
+                      break
+
+          if not ripper_bin:
+              print("لم يتم العثور على ملف AssetRipper التنفيذي!")
+              sys.exit(1)
+
+          print(f"تم العثور على الأداة: {ripper_bin}")
+          os.chmod(ripper_bin, 0o755)
+
+          # 2. تشغيل السيرفر في وضع Headless
+          port = 5055
+          proc = subprocess.Popen([ripper_bin, "--headless", "--port", str(port)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+          base_url = f"http://127.0.0.1:{port}"
+          print("في انتظار استجابة السيرفر...")
+          ready = False
+          for _ in range(40):
+              try:
+                  res = requests.get(base_url, timeout=2)
+                  if res.status_code < 400:
+                      ready = True
+                      print("سيرفر AssetRipper جاهز ويعمل بنجاح!")
+                      break
+              except Exception:
+                  time.sleep(1)
+
+          if not ready:
+              print("فشل الاتصال بسيرفر AssetRipper.")
+              proc.terminate()
+              sys.exit(1)
+
+          # 3. تحديد مجلد بيانات اللعبة بدقة
+          game_dir = os.path.abspath("./GameSource")
+          for root, dirs, files in os.walk("./GameSource"):
+              if any(d.endswith("_Data") for d in dirs) or any(f.endswith(".exe") for f in files):
+                  game_dir = os.path.abspath(root)
+                  break
+
+          print(f"المسار الفعلي للعبة: {game_dir}")
+
+          # 4. إرسال أمر تحميل اللعبة
+          print("جاري قراءة وتحليل ملفات اللعبة (قد يستغرق دقيقة)...")
+          try:
+              r_load = requests.post(f"{base_url}/LoadFolder", data={"path": game_dir}, timeout=300)
+              print(f"حالة التحميل: {r_load.status_code}")
+          except Exception as e:
+              print(f"خطأ أثناء التحميل: {e}")
+
+          # 5. إرسال أمر التصدير
+          out_dir = os.path.abspath("./ExtractedOutput")
+          os.makedirs(out_dir, exist_ok=True)
+          print(f"جاري تصدير المجسمات بهيئة GLB إلى: {out_dir}")
+          
+          try:
+              # محاولة تصدير المشروع الكامل أو المحتوى الأساسي
+              r_exp = requests.post(f"{base_url}/Export/ExportUnityProject", data={"path": out_dir}, timeout=600)
+              if r_exp.status_code >= 400:
+                  r_exp = requests.post(f"{base_url}/Export/PrimaryContent", data={"path": out_dir}, timeout=600)
+              print(f"حالة التصدير: {r_exp.status_code}")
+          except Exception as e:
+              print(f"خطأ أثناء التصدير: {e}")
+
+          proc.terminate()
+          print("تمت عملية الاستخراج بنجاح!")
+          EOF
 
       - name: Compress Godot Assets
         run: |
-          echo "جاري تجميع الملفات الخاصة بـ Godot..."
+          echo "جاري فحص وتجميع أصول Godot..."
           mkdir -p ./Godot_Ready_Assets
           
-          # جمع ملفات GLB والصور والمؤثرات الصوتية وكود C#
+          # جمع ملفات GLB والصور والأصوات وكود C#
           find ./ExtractedOutput -type f \( -name "*.glb" -o -name "*.png" -o -name "*.ogg" -o -name "*.wav" -o -name "*.cs" \) -exec cp --parents {} ./Godot_Ready_Assets/ \;
           
           cd ./Godot_Ready_Assets
