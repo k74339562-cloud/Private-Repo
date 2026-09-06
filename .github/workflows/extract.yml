@@ -49,7 +49,7 @@ jobs:
           }
           EOF
 
-      - name: Run Extraction via Clean Web API
+      - name: Run Clean Extraction
         run: |
           xvfb-run --auto-servernum python - << 'EOF'
           import os
@@ -90,9 +90,9 @@ jobs:
 
           ripper_dir = os.path.dirname(ripper_bin)
 
-          # تشغيل السيرفر بالمعاملات المقبولة فقط حرفياً
+          # هنا التعديل: تشغيل الأداة بالمعاملات المقبولة فقط بدون مسار اللعبة
           cmd = [ripper_bin, "--headless", "--port", str(port)]
-          print(f"تشغيل الأداة: {' '.join(cmd)}")
+          print(f"تشغيل الأداة بالأمر الصحيح: {' '.join(cmd)}")
 
           proc = subprocess.Popen(
               cmd,
@@ -105,7 +105,7 @@ jobs:
 
           server_url = f"http://127.0.0.1:{port}"
 
-          # بث السجلات لحظياً على الشاشة
+          # بث السجلات لحظياً
           def stream_logs():
               for line in proc.stdout:
                   print(f"[AssetRipper] {line.strip()}", flush=True)
@@ -133,7 +133,7 @@ jobs:
               proc.terminate()
               sys.exit(1)
 
-          # 1. إرسال أمر LoadFolder لتحميل ملفات اللعبة
+          # 1. إرسال أمر LoadFolder لتحميل ملفات اللعبة عبر الويب
           print(f"جاري إرسال أمر تحميل مجلد اللعبة: {game_dir} ...")
           try:
               r_load = requests.post(f"{server_url}/LoadFolder", data={"path": game_dir}, timeout=1200, allow_redirects=True)
@@ -141,7 +141,7 @@ jobs:
           except Exception as e:
               print(f"استثناء أثناء التحميل: {e}")
 
-          # 2. إرسال أمر Export للتصدير بصيغة GLB
+          # 2. إرسال أمر Export للتصدير
           out_dir = os.path.abspath("./ExtractedOutput")
           os.makedirs(out_dir, exist_ok=True)
           print(f"جاري تصدير المجسمات والمشروع إلى: {out_dir} ...")
@@ -161,7 +161,6 @@ jobs:
               except Exception as e:
                   print(f"استثناء أثناء محاولة {ep}: {e}")
 
-          # انتظار بسيط لضمان اكتمال كتابة الملفات
           time.sleep(5)
           proc.terminate()
           print("اكتملت جميع العمليات البرمجية بنجاح!")
